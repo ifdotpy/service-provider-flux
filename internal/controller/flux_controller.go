@@ -28,6 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 
 	"github.com/openmcp-project/controller-utils/pkg/clusters"
 	ctrlerrors "github.com/openmcp-project/controller-utils/pkg/errors"
@@ -57,7 +58,7 @@ type FluxReconciler struct {
 // CreateOrUpdate is called on every add or update event
 func (r *FluxReconciler) CreateOrUpdate(ctx context.Context, obj *apiv1alpha1.Flux, pc *apiv1alpha1.ProviderConfig, clusters clusteraccess.ClusterContext) (ctrl.Result, error) {
 	serviceprovider.StatusProgressing(obj, "Reconciling", "Reconcile in progress")
-	mgr, err := r.createObjectManager(obj, pc, clusters)
+	mgr, err := r.createObjectManager(ctx, obj, pc, clusters)
 	if err != nil {
 		serviceprovider.StatusProgressing(obj, conditionReasonError, err.Error())
 		return ctrl.Result{}, ctrlerrors.IgnoreInvalidUserInput(err)
@@ -77,7 +78,7 @@ func (r *FluxReconciler) CreateOrUpdate(ctx context.Context, obj *apiv1alpha1.Fl
 // Delete is called on every delete event
 func (r *FluxReconciler) Delete(ctx context.Context, obj *apiv1alpha1.Flux, pc *apiv1alpha1.ProviderConfig, clusters clusteraccess.ClusterContext) (ctrl.Result, error) {
 	serviceprovider.StatusTerminating(obj)
-	mgr, err := r.createObjectManager(obj, pc, clusters)
+	mgr, err := r.createObjectManager(ctx, obj, pc, clusters)
 	if err != nil {
 		serviceprovider.StatusProgressing(obj, conditionReasonError, err.Error())
 		return ctrl.Result{}, ctrlerrors.IgnoreInvalidUserInput(err)
@@ -123,8 +124,17 @@ func userErrorMessage(err error) string {
 	return strings.Join(errorMessages, "; ")
 }
 
-func (r *FluxReconciler) createObjectManager(obj *apiv1alpha1.Flux, pc *apiv1alpha1.ProviderConfig, clusters clusteraccess.ClusterContext) (flux.Manager, error) {
-	tenantNamespace, err := libutils.StableMCPNamespace(obj.Name, obj.Namespace)
+func (r *FluxReconciler) createObjectManager(ctx context.Context, obj *apiv1alpha1.Flux, pc *apiv1alpha1.ProviderConfig, clusters clusteraccess.ClusterContext) (flux.Manager, error) {
+	// In the multicluster (kcp) deployment mode the logical cluster of the
+	// tenant qualifies the namespace, matching the derivation used for the
+	// cluster access objects and by the ControlPlane controller
+	// (StableMCPNamespaceCtx). In the classic mode no cluster is set in the
+	// context and the derivation is unchanged.
+	onboardingNamespace := obj.Namespace
+	if cluster, ok := mccontext.ClusterFrom(ctx); ok && cluster != "" {
+		onboardingNamespace = string(cluster) + "_" + onboardingNamespace
+	}
+	tenantNamespace, err := libutils.StableMCPNamespace(obj.Name, onboardingNamespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to determine tenant namespace for Flux deployment: %w", err)
 	}

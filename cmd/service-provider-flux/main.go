@@ -113,6 +113,7 @@ func initMcpScheme() {
 func main() {
 	var command string
 	var environment, providerName string
+	var kcpEndpointSlice, kcpKubeconfig string
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
@@ -126,6 +127,8 @@ func main() {
 
 	flag.StringVar(&environment, "environment", "", "Name of the environment")
 	flag.StringVar(&providerName, "provider-name", "", "Name of the provider resource")
+	flag.StringVar(&kcpEndpointSlice, "kcp-endpoint-slice", "", "Name of the kcp APIExportEndpointSlice to consume. If set, the provider runs in the multicluster (kcp) deployment mode instead of watching an onboarding cluster.")
+	flag.StringVar(&kcpKubeconfig, "kcp-kubeconfig", "", "Path to the kubeconfig for the kcp workspace that holds the APIExportEndpointSlice (multicluster mode only).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -245,6 +248,41 @@ func main() {
 		WithTimeout(30 * time.Minute)
 	ctx := context.Background()
 	// init (job that installs CRDs)
+	if command == "init" && kcpEndpointSlice != "" {
+		// Multicluster (kcp) mode: no onboarding cluster exists. The service
+		// API is served by an APIExport in kcp; only the platform-side CRDs
+		// (ProviderConfig) are installed, and the served GVKs are registered
+		// at the ServiceProvider as in the classic mode.
+		platformCRDs := func() ([]*apiextensionv1.CustomResourceDefinition, error) {
+			all, err := crds.CRDs()
+			if err != nil {
+				return nil, err
+			}
+			filtered := make([]*apiextensionv1.CustomResourceDefinition, 0, len(all))
+			for _, crd := range all {
+				if crd.Labels[openmcpconst.ClusterLabel] == clustersv1alpha1.PURPOSE_PLATFORM {
+					filtered = append(filtered, crd)
+				}
+			}
+			return filtered, nil
+		}
+		crdManager := crdutil.NewCRDManager(openmcpconst.ClusterLabel, platformCRDs)
+		crdManager.AddCRDLabelToClusterMapping(clustersv1alpha1.PURPOSE_PLATFORM, platformCluster)
+		if err := crdManager.CreateOrUpdateCRDs(ctx, &log); err != nil {
+			setupLog.Error(err, "Failed to create or update CRDs")
+			os.Exit(1)
+		}
+		spGVK := metav1.GroupVersionKind{
+			Group:   fluxsv1alpha1.GroupVersion.Group,
+			Version: fluxsv1alpha1.GroupVersion.Version,
+			Kind:    "Flux",
+		}
+		if err := utils.RegisterGVKsAtServiceProvider(ctx, platformCluster.Client(), providerName, spGVK); err != nil {
+			setupLog.Error(err, "Failed to register GVK at ServiceProvider")
+			os.Exit(1)
+		}
+		return
+	}
 	if command == "init" {
 		initPermissions := []clustersv1alpha1.PermissionsRequest{
 			{
@@ -285,51 +323,6 @@ func main() {
 		return
 	}
 	// run (sp controller deployment)
-	runPermissions := []clustersv1alpha1.PermissionsRequest{
-		{
-
-			Rules: []rbacv1.PolicyRule{
-				{
-					APIGroups: []string{fluxsv1alpha1.GroupVersion.Group},
-					Resources: []string{"*"},
-					Verbs:     []string{"*"},
-				},
-			},
-		},
-	}
-	onboardingCluster, err := requestOnboardingClusterAccess(ctx, clusterAccessManager, platformCluster, runPermissions, "run")
-	if err != nil {
-		setupLog.Error(err, "Failed to create and wait for onboarding cluster access")
-	}
-	// end sp specifics
-
-	mgr, err := ctrl.NewManager(onboardingCluster.RESTConfig(), ctrl.Options{
-		Scheme:                 onboardingScheme,
-		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "services.open-control-plane.io.flux",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
-	})
-	if err != nil {
-		setupLog.Error(err, "unable to start manager")
-		os.Exit(1)
-	}
-	if err = mgr.Add(platformCluster.Cluster()); err != nil {
-		setupLog.Error(err, "unable to add platform cluster to manager")
-		os.Exit(1)
-	}
 	tokenAccessConfig := &clustersv1alpha1.TokenConfig{
 		Permissions: []clustersv1alpha1.PermissionsRequest{
 			{
@@ -380,6 +373,60 @@ func main() {
 		car = localaccess.NewLocalAdvancedClusterAccessReconciler(car)
 	}
 
+	if kcpEndpointSlice != "" {
+		if err := runMulticluster(log, platformCluster, car, podNamespace, providerName,
+			kcpEndpointSlice, kcpKubeconfig, probeAddr, metricsServerOptions); err != nil {
+			setupLog.Error(err, "problem running multicluster manager")
+			os.Exit(1)
+		}
+		return
+	}
+
+	runPermissions := []clustersv1alpha1.PermissionsRequest{
+		{
+
+			Rules: []rbacv1.PolicyRule{
+				{
+					APIGroups: []string{fluxsv1alpha1.GroupVersion.Group},
+					Resources: []string{"*"},
+					Verbs:     []string{"*"},
+				},
+			},
+		},
+	}
+	onboardingCluster, err := requestOnboardingClusterAccess(ctx, clusterAccessManager, platformCluster, runPermissions, "run")
+	if err != nil {
+		setupLog.Error(err, "Failed to create and wait for onboarding cluster access")
+	}
+	// end sp specifics
+
+	mgr, err := ctrl.NewManager(onboardingCluster.RESTConfig(), ctrl.Options{
+		Scheme:                 onboardingScheme,
+		Metrics:                metricsServerOptions,
+		WebhookServer:          webhookServer,
+		HealthProbeBindAddress: probeAddr,
+		LeaderElection:         enableLeaderElection,
+		LeaderElectionID:       "services.open-control-plane.io.flux",
+		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
+		// when the Manager ends. This requires the binary to immediately end when the
+		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
+		// speeds up voluntary leader transitions as the new leader don't have to wait
+		// LeaseDuration time first.
+		//
+		// In the default scaffold provided, the program ends immediately after
+		// the manager stops, so would be fine to enable this option. However,
+		// if you are doing or is intended to do any operation such as perform cleanups
+		// after the manager stops then its usage might be unsafe.
+		// LeaderElectionReleaseOnCancel: true,
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to start manager")
+		os.Exit(1)
+	}
+	if err = mgr.Add(platformCluster.Cluster()); err != nil {
+		setupLog.Error(err, "unable to add platform cluster to manager")
+		os.Exit(1)
+	}
 	spr := serviceprovider.NewAPIReconcilerBuilder[*fluxsv1alpha1.Flux, *fluxsv1alpha1.ProviderConfig]().
 		EmptyObjectProvider(func() *fluxsv1alpha1.Flux { return &fluxsv1alpha1.Flux{} }).
 		EmptyConfigProvider(func() *fluxsv1alpha1.ProviderConfig { return &fluxsv1alpha1.ProviderConfig{} }).
