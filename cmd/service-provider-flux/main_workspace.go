@@ -170,7 +170,7 @@ func (h *fluxWorkspaceHandler) Ensure(ctx context.Context, ws workspace.Workspac
 	repo := &sourcev1.OCIRepository{ObjectMeta: metav1.ObjectMeta{Name: "flux2", Namespace: nsName}}
 	if _, err := ctrl.CreateOrUpdate(ctx, h.platform, repo, func() error {
 		repo.Spec = sourcev1.OCIRepositorySpec{
-			URL:       ver.ChartUrl,
+			URL:       ver.ChartURL,
 			Reference: &sourcev1.OCIRepositoryRef{Tag: ver.ChartVersion},
 			Interval:  metav1.Duration{Duration: 10 * time.Minute},
 			LayerSelector: &sourcev1.OCILayerSelector{
