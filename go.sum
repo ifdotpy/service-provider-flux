@@ -127,8 +127,8 @@ github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 h1:5VipnvEpbqr2gA2VbM+nYVbkIF2
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0/go.mod h1:Hyl3n6Twe1hvtd9XUXDec4pTvgMSEixRuQKPTMH2bNs=
 github.com/hashicorp/go-cleanhttp v0.5.2 h1:035FKYIWjmULyFRBKPs8TBQoi0x6d9G4xc9neXJWAZQ=
 github.com/hashicorp/go-cleanhttp v0.5.2/go.mod h1:kO/YDlP8L1346E6Sodw+PrpBSV4/SoxCXGY6BqNFT48=
-github.com/ifdotpy/opencontrolplane-runtime v1.3.1-0.20260910214033-6ab0cda36de4 h1:ZGxIldH9X3N66rgLbnw4uvJOoM2AHi+JRSjxUAfEwSI=
-github.com/ifdotpy/opencontrolplane-runtime v1.3.1-0.20260910214033-6ab0cda36de4/go.mod h1:qQS3NbJN9NEVq2FM7SBd6m9pR9sMW19ForFMkLFXegY=
+github.com/ifdotpy/opencontrolplane-runtime v1.3.1-0.20260912081941-fd86aaf90dc1 h1:dI7+eFDBAfMmnWUzGbf6tNE5fFVTExYiGcTYfroiCgg=
+github.com/ifdotpy/opencontrolplane-runtime v1.3.1-0.20260912081941-fd86aaf90dc1/go.mod h1:qQS3NbJN9NEVq2FM7SBd6m9pR9sMW19ForFMkLFXegY=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
