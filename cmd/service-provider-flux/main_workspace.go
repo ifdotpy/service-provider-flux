@@ -212,6 +212,12 @@ func (h *fluxWorkspaceHandler) Ensure(ctx context.Context, ws workspace.Workspac
 }
 
 func (h *fluxWorkspaceHandler) Remove(ctx context.Context, ws workspace.Workspace) error {
+	// Revoke the workspace credential first (the workspace client of ws no
+	// longer works after a disengagement; Revoke uses the provider identity).
+	if err := workspace.Revoke(ctx, h.providerCfg, ws.Name, workspace.TokenSpec{
+		Namespace: wsFluxNamespace, ServiceAccountName: wsFluxSA, ClusterRole: "cluster-admin"}, h.platformNamespace(ws)); err != nil {
+		h.log.Error(err, "revoking workspace credential", "workspace", ws.Name)
+	}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: h.platformNamespace(ws)}}
 	// Deleting the HelmRelease first lets helm-controller uninstall cleanly.
 	hr := &helmv2.HelmRelease{ObjectMeta: metav1.ObjectMeta{Name: "flux", Namespace: ns.Name}}

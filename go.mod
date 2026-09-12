@@ -138,4 +138,4 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace github.com/openmcp-project/opencontrolplane-runtime => github.com/ifdotpy/opencontrolplane-runtime v1.3.1-0.20260912085626-662174f7a939
+replace github.com/openmcp-project/opencontrolplane-runtime => github.com/ifdotpy/opencontrolplane-runtime v1.3.1-0.20260912090221-d9767ce27051
