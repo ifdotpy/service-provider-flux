@@ -152,6 +152,10 @@ func (h *fluxWorkspaceHandler) Ensure(ctx context.Context, ws workspace.Workspac
 		return fmt.Errorf("ProviderConfig %q has no versions", h.providerName)
 	}
 	ver := pc.Spec.Versions[0]
+	chartURL := "oci://ghcr.io/fluxcd-community/charts/flux2"
+	if ver.ChartURL != nil && *ver.ChartURL != "" {
+		chartURL = *ver.ChartURL
+	}
 
 	// 3. platform side: namespace, kubeconfig secret, chart source, release
 	nsName := h.platformNamespace(ws)
@@ -170,7 +174,7 @@ func (h *fluxWorkspaceHandler) Ensure(ctx context.Context, ws workspace.Workspac
 	repo := &sourcev1.OCIRepository{ObjectMeta: metav1.ObjectMeta{Name: "flux2", Namespace: nsName}}
 	if _, err := ctrl.CreateOrUpdate(ctx, h.platform, repo, func() error {
 		repo.Spec = sourcev1.OCIRepositorySpec{
-			URL:       ver.ChartURL,
+			URL:       chartURL,
 			Reference: &sourcev1.OCIRepositoryRef{Tag: ver.ChartVersion},
 			Interval:  metav1.Duration{Duration: 10 * time.Minute},
 			LayerSelector: &sourcev1.OCILayerSelector{
