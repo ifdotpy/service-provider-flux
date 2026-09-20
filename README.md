@@ -265,3 +265,24 @@ Copyright OpenControlPlane contributors. Please see our [LICENSE](LICENSE) for c
 <p align="center">
   Copyright Linux Foundation Europe. For web site terms of use, trademark policy and other project policies please see <a href="https://linuxfoundation.eu/en/policies">https://linuxfoundation.eu/en/policies</a>.
 </p>
+
+## Controllers on the platform cluster
+
+The default `--service-controller-cluster=mcp` installs the service on the MCP.
+Use `--service-controller-cluster=platform` for an MCP API without worker nodes,
+including a KCP workspace. This mode installs controller pods into the existing
+platform cluster's stable namespace for the service instance. It does not request
+or provision a workload cluster.
+
+The platform cluster must run the Flux source and Helm controllers. The provider
+needs write access to Secrets and Flux resources in the instance namespace.
+The MCP must already expose the service APIs. The chart does not install CRDs or
+RBAC on the platform cluster in this mode; controllers authenticate to the MCP
+using its existing access credential. That credential is copied into the instance
+namespace, mounted through `KUBECONFIG`, and its rotation changes the pod template.
+The service controllers reconcile the MCP, not the platform cluster.
+
+Deletion uninstalls the Helm release before removing the credential copy. The
+MCP namespace used for leader election is retained because services can share it.
+Choose the placement before installing a service; moving an existing installation
+between clusters is not a supported migration operation.

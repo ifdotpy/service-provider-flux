@@ -56,6 +56,12 @@ type ManageFluxResourcesParams struct {
 	ClusterContext clusteraccess.ClusterContext
 	// RequestedVersion is the version of flux that a user requested through the onboarding API
 	RequestedVersion apiv1alpha1.FluxVersion
+	// ControllersOnPlatform installs the chart on the platform cluster and configures
+	// its controllers to address the MCP through the mounted access credential.
+	ControllersOnPlatform bool
+	// RemoteNamespace is the MCP namespace used by the locally running controllers.
+	RemoteNamespace  ManagedObject
+	RemoteCredential ManagedObject
 }
 
 // ManageFluxResources configures OCIRepository and HelmRelease on the platform cluster.
@@ -106,6 +112,21 @@ func ManageFluxResources(p ManageFluxResourcesParams) {
 			if !ok {
 				return fmt.Errorf("expected *helmv2.HelmRelease, got %T", o)
 			}
+			installCRDs := helmv2.Create
+			upgradeCRDs := helmv2.CreateReplace
+			var kubeConfig *meta.KubeConfigReference
+			if p.ControllersOnPlatform {
+				// A nil kubeconfig installs into the platform cluster hosting Helm.
+				installCRDs = helmv2.Skip
+				upgradeCRDs = helmv2.Skip
+			} else {
+				kubeConfig = &meta.KubeConfigReference{
+					SecretRef: &meta.SecretKeyReference{
+						Name: p.ClusterContext.MCPAccessSecretKey.Name,
+						Key:  "kubeconfig",
+					},
+				}
+			}
 			helmRelease.Spec = helmv2.HelmReleaseSpec{
 				Interval: metav1.Duration{Duration: p.ProviderConfig.PollInterval()},
 				ChartRef: &helmv2.CrossNamespaceSourceReference{
@@ -113,21 +134,16 @@ func ManageFluxResources(p ManageFluxResourcesParams) {
 					Name:      OCIRepositoryName,
 					Namespace: p.Cluster.GetDefaultNamespace(),
 				},
-				KubeConfig: &meta.KubeConfigReference{
-					SecretRef: &meta.SecretKeyReference{
-						Name: p.ClusterContext.MCPAccessSecretKey.Name,
-						Key:  "kubeconfig",
-					},
-				},
+				KubeConfig: kubeConfig,
 				Install: &helmv2.Install{
-					CRDs:            helmv2.Create,
-					CreateNamespace: true,
+					CRDs:            installCRDs,
+					CreateNamespace: !p.ControllersOnPlatform,
 					Remediation: &helmv2.InstallRemediation{
 						Retries: 3,
 					},
 				},
 				Upgrade: &helmv2.Upgrade{
-					CRDs: helmv2.CreateReplace,
+					CRDs: upgradeCRDs,
 					Remediation: &helmv2.UpgradeRemediation{
 						Retries:  3,
 						Strategy: ptr.To(helmv2.RollbackRemediationStrategy),
@@ -146,11 +162,21 @@ func ManageFluxResources(p ManageFluxResourcesParams) {
 			}
 			return nil
 		},
-		DependsOn:      []ManagedObject{ociRepo},
+		DependsOn:      compactDependencies(ociRepo, p.RemoteNamespace, p.RemoteCredential),
 		DeletionPolicy: Delete,
 		StatusFunc:     FluxStatus,
 	})
 	p.Cluster.AddObject(helmRelease)
+}
+
+func compactDependencies(objects ...ManagedObject) []ManagedObject {
+	result := make([]ManagedObject, 0, len(objects))
+	for _, object := range objects {
+		if object != nil {
+			result = append(result, object)
+		}
+	}
+	return result
 }
 
 // FluxStatus indicates whether the given Flux object is in phase terminating, pending or ready.

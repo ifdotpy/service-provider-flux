@@ -22,7 +22,9 @@ import (
 	helmv2 "github.com/fluxcd/helm-controller/api/v2"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	"github.com/openmcp-project/controller-utils/pkg/clusters"
+	"github.com/openmcp-project/opencontrolplane-runtime/pkg/serviceprovider/clusteraccess"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -34,6 +36,44 @@ import (
 
 	apiv1alpha1 "github.com/openmcp-project/service-provider-flux/api/v1alpha1"
 )
+
+func TestManageFluxResourcesControllerPlacement(t *testing.T) {
+	chartURL := "oci://example.test/flux"
+	tests := []struct {
+		name                  string
+		controllersOnPlatform bool
+		wantKubeConfig        bool
+		wantCRDPolicy         helmv2.CRDsPolicy
+	}{
+		{name: "MCP placement uses Helm remote kubeconfig", wantKubeConfig: true, wantCRDPolicy: helmv2.Create},
+		{name: "platform placement mounts MCP kubeconfig in controllers", controllersOnPlatform: true, wantCRDPolicy: helmv2.Skip},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster := &testManagedCluster{clusterType: PlatformCluster}
+			ManageFluxResources(ManageFluxResourcesParams{
+				Cluster:               cluster,
+				MCPNamespace:          "service-instance",
+				ProviderConfig:        &apiv1alpha1.ProviderConfig{Spec: apiv1alpha1.ProviderConfigSpec{PollInterval: &metav1.Duration{Duration: time.Minute}}},
+				ClusterContext:        clusteraccess.ClusterContext{MCPAccessSecretKey: client.ObjectKey{Name: "mcp-access"}, WorkloadAccessSecretKey: client.ObjectKey{Name: "workload-access"}},
+				RequestedVersion:      apiv1alpha1.FluxVersion{Version: "v1", ChartURL: &chartURL, ChartVersion: "1.0.0"},
+				ControllersOnPlatform: tt.controllersOnPlatform,
+			})
+
+			require.Len(t, cluster.objects, 2)
+			require.NoError(t, cluster.objects[1].Reconcile(context.Background()))
+			release := cluster.objects[1].GetObject().(*helmv2.HelmRelease)
+			assert.Equal(t, "service-instance", release.Spec.TargetNamespace)
+			assert.Equal(t, tt.wantCRDPolicy, release.Spec.Install.CRDs)
+			if tt.wantKubeConfig {
+				require.NotNil(t, release.Spec.KubeConfig)
+				assert.Equal(t, "mcp-access", release.Spec.KubeConfig.SecretRef.Name)
+			} else {
+				require.Nil(t, release.Spec.KubeConfig)
+			}
+		})
+	}
+}
 
 // TestFluxStatus tests the FluxStatus function
 func TestFluxStatus(t *testing.T) {

@@ -120,6 +120,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var servicePlacement string
 	var tlsOpts []func(*tls.Config)
 
 	fips.Verify(context.Background())
@@ -143,6 +144,8 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&servicePlacement, "service-controller-cluster", string(controller.PlacementMCP),
+		"Cluster where the managed service controllers run: mcp or platform")
 
 	logging.InitFlags(flag.CommandLine) // add standard logging flags
 
@@ -153,6 +156,11 @@ func main() {
 	}
 
 	flag.Parse()
+	controllerCluster := controller.Placement(servicePlacement)
+	if err := controllerCluster.Validate(); err != nil {
+		setupLog.Error(err, "invalid service controller cluster")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -389,6 +397,7 @@ func main() {
 			OnboardingCluster: onboardingCluster,
 			PlatformCluster:   platformCluster,
 			PodNamespace:      podNamespace,
+			Placement:         controllerCluster,
 		}).
 		AdvancedClusterAccessReconciler(car).
 		MustBuild()

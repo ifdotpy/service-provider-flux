@@ -32,6 +32,10 @@ const (
 
 	// CustomCABundleConfigMapName is the fixed name for the copied CA bundle ConfigMap on the MCP cluster.
 	CustomCABundleConfigMapName = "custom-ca-bundle"
+
+	remoteMCPKubeconfigVolume = "mcp-kubeconfig"
+	remoteMCPKubeconfigPath   = "/etc/open-control-plane/mcp/kubeconfig"
+	credentialHashAnnotation  = "open-control-plane.io/mcp-credential-hash"
 )
 
 // certDirectories contains a list of places where the default system certs are stored in addition to caBundleMountDir
@@ -39,6 +43,57 @@ const (
 var certDirectories = []string{
 	"/etc/ssl/certs",
 	"/etc/pki/tls/certs",
+}
+
+// ConfigureRemoteMCPControllers configures the Flux chart to run its controller
+// pods on the Helm release cluster while they reconcile a remote MCP API.
+// ProviderConfig values are retained except for settings required by this mode.
+func ConfigureRemoteMCPControllers(values *apiextensionsv1.JSON, credentialSecret, namespace, credentialHash string) (*apiextensionsv1.JSON, error) {
+	if credentialSecret == "" {
+		return nil, errors.New("MCP credential secret name must be set")
+	}
+	if namespace == "" {
+		return nil, errors.New("controller namespace must be set")
+	}
+
+	root, err := decodeRemoteValues(values)
+	if err != nil {
+		return nil, err
+	}
+	volume := corev1.Volume{
+		Name: remoteMCPKubeconfigVolume,
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: credentialSecret,
+			Items:      []corev1.KeyToPath{{Key: "kubeconfig", Path: "kubeconfig"}},
+		}},
+	}
+	mount := corev1.VolumeMount{Name: remoteMCPKubeconfigVolume, MountPath: "/etc/open-control-plane/mcp", ReadOnly: true}
+	env := corev1.EnvVar{Name: "KUBECONFIG", Value: remoteMCPKubeconfigPath}
+	for _, name := range fluxControllers {
+		if err := addPodConfigToController(root, name, volume, mount, env); err != nil {
+			return nil, err
+		}
+		if err := setCredentialAnnotation(root, name, credentialHash); err != nil {
+			return nil, err
+		}
+	}
+	root["installCRDs"] = json.RawMessage("false")
+	root["namespaceOverride"], _ = json.Marshal(namespace)
+	rbac := map[string]json.RawMessage{}
+	if err := unmarshalIfPresent(root, "rbac", &rbac); err != nil {
+		return nil, err
+	}
+	if rbac == nil {
+		rbac = map[string]json.RawMessage{}
+	}
+	rbac["create"] = json.RawMessage("false")
+	rbac["createAggregation"] = json.RawMessage("false")
+	root["rbac"], _ = json.Marshal(rbac)
+	out, err := json.Marshal(root)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal helm values: %w", err)
+	}
+	return &apiextensionsv1.JSON{Raw: out}, nil
 }
 
 // nolint:goconst
@@ -133,7 +188,7 @@ func AddCAToHelmValues(values *apiextensionsv1.JSON, configMap *corev1.ConfigMap
 	}
 
 	for _, controller := range fluxControllers {
-		if err := addCAToController(root, controller, caVolume, caVolumeMount, caEnvVar); err != nil {
+		if err := addPodConfigToController(root, controller, caVolume, caVolumeMount, caEnvVar); err != nil {
 			return nil, err
 		}
 	}
@@ -146,7 +201,7 @@ func AddCAToHelmValues(values *apiextensionsv1.JSON, configMap *corev1.ConfigMap
 	return &apiextensionsv1.JSON{Raw: out}, nil
 }
 
-func addCAToController(
+func addPodConfigToController(
 	root map[string]json.RawMessage,
 	controller string,
 	caVolume corev1.Volume,
@@ -252,4 +307,35 @@ func unmarshalIfPresent(obj map[string]json.RawMessage, key string, out any) err
 		return fmt.Errorf("invalid %s JSON: %w", key, err)
 	}
 	return nil
+}
+
+func setCredentialAnnotation(root map[string]json.RawMessage, name, credentialHash string) error {
+	var controller map[string]json.RawMessage
+	if err := json.Unmarshal(root[name], &controller); err != nil {
+		return err
+	}
+	annotations := map[string]string{}
+	if err := unmarshalIfPresent(controller, "annotations", &annotations); err != nil {
+		return fmt.Errorf("invalid %s.annotations: %w", name, err)
+	}
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations[credentialHashAnnotation] = credentialHash
+	controller["annotations"], _ = json.Marshal(annotations)
+	root[name], _ = json.Marshal(controller)
+	return nil
+}
+
+func decodeRemoteValues(values *apiextensionsv1.JSON) (map[string]json.RawMessage, error) {
+	root := map[string]json.RawMessage{}
+	if values != nil && len(values.Raw) > 0 {
+		if err := json.Unmarshal(values.Raw, &root); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal helm values: %w", err)
+		}
+	}
+	if root == nil {
+		root = map[string]json.RawMessage{}
+	}
+	return root, nil
 }

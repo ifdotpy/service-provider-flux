@@ -132,6 +132,72 @@ func TestExtractHelmValues(t *testing.T) {
 	}
 }
 
+func TestConfigureRemoteMCPControllers(t *testing.T) {
+	values := mustMarshalJSON(t, map[string]any{
+		"installCRDs": true,
+		"rbac":        map[string]any{"create": true},
+		"sourceController": map[string]any{
+			"resources": map[string]any{"limits": map[string]any{"memory": "256Mi"}},
+			"extraEnv":  []map[string]any{{"name": "EXISTING", "value": "preserved"}, {"name": "KUBECONFIG", "value": "old"}},
+		},
+	})
+
+	configured, err := ConfigureRemoteMCPControllers(values, "mcp-access", "tenant-runtime", "credential-hash")
+	require.NoError(t, err)
+
+	root := map[string]any{}
+	require.NoError(t, json.Unmarshal(configured.Raw, &root))
+	assert.Equal(t, false, root["installCRDs"])
+	assert.Equal(t, "tenant-runtime", root["namespaceOverride"])
+	assert.NotContains(t, root, "watchAllNamespaces")
+	assert.Equal(t, false, root["rbac"].(map[string]any)["create"])
+	assert.Equal(t, false, root["rbac"].(map[string]any)["createAggregation"])
+
+	for _, name := range []string{"sourceController", "kustomizeController", "helmController"} {
+		controller := root[name].(map[string]any)
+		assert.NotContains(t, controller, "create")
+		assertNamedValue(t, controller["extraEnv"], "KUBECONFIG", "value", remoteMCPKubeconfigPath)
+		assertNamedValue(t, controller["volumes"], remoteMCPKubeconfigVolume, "secret", map[string]any{
+			"secretName": "mcp-access",
+			"items":      []any{map[string]any{"key": "kubeconfig", "path": "kubeconfig"}},
+		})
+		assertNamedValue(t, controller["volumeMounts"], remoteMCPKubeconfigVolume, "mountPath", "/etc/open-control-plane/mcp")
+		assert.Equal(t, "credential-hash", controller["annotations"].(map[string]any)[credentialHashAnnotation])
+	}
+
+	source := root["sourceController"].(map[string]any)
+	assertNamedValue(t, source["extraEnv"], "EXISTING", "value", "preserved")
+	assert.Equal(t, "256Mi", source["resources"].(map[string]any)["limits"].(map[string]any)["memory"])
+	for _, name := range []string{"notificationController", "imageReflectionController", "imageAutomationController"} {
+		assert.NotContains(t, root[name].(map[string]any), "create")
+	}
+}
+
+func TestConfigureRemoteMCPControllersRejectsInvalidInput(t *testing.T) {
+	_, err := ConfigureRemoteMCPControllers(nil, "", "tenant-runtime", "hash")
+	assert.EqualError(t, err, "MCP credential secret name must be set")
+
+	_, err = ConfigureRemoteMCPControllers(nil, "mcp-access", "", "hash")
+	assert.EqualError(t, err, "controller namespace must be set")
+
+	_, err = ConfigureRemoteMCPControllers(mustMarshalJSON(t, map[string]any{"sourceController": "invalid"}), "mcp-access", "tenant-runtime", "hash")
+	assert.ErrorContains(t, err, "failed to unmarshal sourceController")
+}
+
+func assertNamedValue(t *testing.T, value any, name, key string, expected any) {
+	t.Helper()
+	items, ok := value.([]any)
+	require.True(t, ok)
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if ok && entry["name"] == name {
+			assert.Equal(t, expected, entry[key])
+			return
+		}
+	}
+	t.Fatalf("entry %q not found in %#v", name, value)
+}
+
 func TestAddCaToHelmValues(t *testing.T) {
 	caBundleRef := &corev1.ConfigMapKeySelector{
 		LocalObjectReference: corev1.LocalObjectReference{Name: "custom-ca-configmap"},

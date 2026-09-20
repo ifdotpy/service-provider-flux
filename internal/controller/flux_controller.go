@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"reflect"
@@ -27,6 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/openmcp-project/controller-utils/pkg/clusters"
@@ -41,6 +43,25 @@ import (
 
 const conditionReasonError = "ReconcileError"
 
+// Placement selects where the managed service controllers are installed.
+type Placement string
+
+const (
+	// PlacementMCP installs the service controllers on the managed control plane.
+	PlacementMCP Placement = "mcp"
+	// PlacementPlatform installs the service controllers on the existing platform cluster.
+	// The controllers use the MCP access credential as their kubeconfig.
+	PlacementPlatform Placement = "platform"
+)
+
+// Validate checks whether the controller cluster value is supported.
+func (c Placement) Validate() error {
+	if c != PlacementMCP && c != PlacementPlatform {
+		return fmt.Errorf("service controller cluster must be %q or %q, got %q", PlacementMCP, PlacementPlatform, c)
+	}
+	return nil
+}
+
 // ErrManagedResources is an end-user facing error if errors are present inside Flux.Status.ManagedResources
 var ErrManagedResources = errors.New("resources contain reconcile errors")
 
@@ -52,12 +73,14 @@ type FluxReconciler struct {
 	PlatformCluster *clusters.Cluster
 	// PodNamespace is the namespace where this controller is deployed in.
 	PodNamespace string
+	// Placement selects where the managed Flux controllers run.
+	Placement Placement
 }
 
 // CreateOrUpdate is called on every add or update event
 func (r *FluxReconciler) CreateOrUpdate(ctx context.Context, obj *apiv1alpha1.Flux, pc *apiv1alpha1.ProviderConfig, clusters clusteraccess.ClusterContext) (ctrl.Result, error) {
 	serviceprovider.StatusProgressing(obj, "Reconciling", "Reconcile in progress")
-	mgr, err := r.createObjectManager(obj, pc, clusters)
+	mgr, err := r.createObjectManager(ctx, obj, pc, clusters)
 	if err != nil {
 		serviceprovider.StatusProgressing(obj, conditionReasonError, err.Error())
 		return ctrl.Result{}, ctrlerrors.IgnoreInvalidUserInput(err)
@@ -77,7 +100,7 @@ func (r *FluxReconciler) CreateOrUpdate(ctx context.Context, obj *apiv1alpha1.Fl
 // Delete is called on every delete event
 func (r *FluxReconciler) Delete(ctx context.Context, obj *apiv1alpha1.Flux, pc *apiv1alpha1.ProviderConfig, clusters clusteraccess.ClusterContext) (ctrl.Result, error) {
 	serviceprovider.StatusTerminating(obj)
-	mgr, err := r.createObjectManager(obj, pc, clusters)
+	mgr, err := r.createObjectManager(ctx, obj, pc, clusters)
 	if err != nil {
 		serviceprovider.StatusProgressing(obj, conditionReasonError, err.Error())
 		return ctrl.Result{}, ctrlerrors.IgnoreInvalidUserInput(err)
@@ -123,7 +146,7 @@ func userErrorMessage(err error) string {
 	return strings.Join(errorMessages, "; ")
 }
 
-func (r *FluxReconciler) createObjectManager(obj *apiv1alpha1.Flux, pc *apiv1alpha1.ProviderConfig, clusters clusteraccess.ClusterContext) (flux.Manager, error) {
+func (r *FluxReconciler) createObjectManager(ctx context.Context, obj *apiv1alpha1.Flux, pc *apiv1alpha1.ProviderConfig, clusters clusteraccess.ClusterContext) (flux.Manager, error) {
 	tenantNamespace, err := libutils.StableMCPNamespace(obj.Name, obj.Namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to determine tenant namespace for Flux deployment: %w", err)
@@ -143,19 +166,34 @@ func (r *FluxReconciler) createObjectManager(obj *apiv1alpha1.Flux, pc *apiv1alp
 
 	// Create managed clusters
 	platformCluster := flux.NewManagedCluster(r.PlatformCluster, r.PlatformCluster.RESTConfig(), tenantNamespace, flux.PlatformCluster)
+	controllersOnPlatform := r.Placement == PlacementPlatform
 
 	// Support namespace override from Helm values
-	fluxNamespace := flux.DefaultFluxNamespace
-	if helmValues.NamespaceOverride != "" {
-		fluxNamespace = helmValues.NamespaceOverride
+	fluxNamespace := installationNamespace(flux.DefaultFluxNamespace, helmValues.NamespaceOverride, tenantNamespace, controllersOnPlatform)
+	mcpNamespace := fluxNamespace
+	mcpCluster := flux.NewManagedCluster(clusters.MCPCluster, clusters.MCPCluster.RESTConfig(), mcpNamespace, flux.ManagedControlPlane)
+	var remoteNamespace flux.ManagedObject
+	var credential flux.ManagedObject
+
+	if controllersOnPlatform {
+		if err := r.configureRemoteVersion(ctx, obj.DeletionTimestamp.IsZero(), &fluxVersion, tenantNamespace, clusters.MCPAccessSecretKey); err != nil {
+			return nil, err
+		}
+		remoteNamespace = flux.ManageNamespace(mcpCluster, tenantNamespace)
 	}
-	mcpCluster := flux.NewManagedCluster(clusters.MCPCluster, clusters.MCPCluster.RESTConfig(), fluxNamespace, flux.ManagedControlPlane)
 
 	// Sync image pull secrets from platform cluster to MCP
-	flux.ManagePullSecrets(mcpCluster, helmValues.ImagePullSecrets, flux.SecretCopyConfig{
+	controllerCluster := mcpCluster
+	controllerNamespace := fluxNamespace
+	if controllersOnPlatform {
+		controllerCluster = platformCluster
+		credential = flux.ManageMCPCredential(controllerCluster, r.PlatformCluster.Client(), clusters.MCPAccessSecretKey)
+		controllerNamespace = tenantNamespace
+	}
+	flux.ManagePullSecrets(controllerCluster, helmValues.ImagePullSecrets, flux.SecretCopyConfig{
 		SourceClient:    r.PlatformCluster.Client(),
 		SourceNamespace: r.PodNamespace,
-		TargetNamespace: fluxNamespace,
+		TargetNamespace: controllerNamespace,
 	})
 
 	// Sync chart pull secret within platform cluster from pod namespace to tenant namespace
@@ -175,32 +213,22 @@ func (r *FluxReconciler) createObjectManager(obj *apiv1alpha1.Flux, pc *apiv1alp
 		})
 	}
 
-	if pc.Spec.CABundleRef != nil {
-		// add custom ca volume, volumeMount and envVar to helm values
-		fluxVersion.Values, err = flux.AddCAToHelmValues(fluxVersion.Values, pc.Spec.CABundleRef)
-		if err != nil {
-			return nil, fmt.Errorf("failed to add ca volume to helm values: %w", err)
-		}
-
-		// Sync ca configmap from platform cluster to MCP
-		flux.ManageCaConfigMap(mcpCluster, pc.Spec.CABundleRef.LocalObjectReference, flux.ConfigMapCopyConfig{
-			SourceClient:    r.PlatformCluster.Client(),
-			SourceNamespace: r.PodNamespace,
-			TargetNamespace: fluxNamespace,
-			TargetName:      flux.CustomCABundleConfigMapName,
-		})
-
+	if err := r.configureCA(controllerCluster, pc, &fluxVersion); err != nil {
+		return nil, err
 	}
 
 	// Configure Flux resources (OCIRepository and HelmRelease)
 	flux.ManageFluxResources(flux.ManageFluxResourcesParams{
-		Cluster:             platformCluster,
-		MCPNamespace:        fluxNamespace,
-		ChartPullSecretName: prefixedChartPullSecret,
-		Obj:                 obj,
-		ProviderConfig:      pc,
-		ClusterContext:      clusters,
-		RequestedVersion:    fluxVersion,
+		Cluster:               platformCluster,
+		MCPNamespace:          controllerNamespace,
+		ChartPullSecretName:   prefixedChartPullSecret,
+		Obj:                   obj,
+		ProviderConfig:        pc,
+		ClusterContext:        clusters,
+		RequestedVersion:      fluxVersion,
+		ControllersOnPlatform: controllersOnPlatform,
+		RemoteNamespace:       remoteNamespace,
+		RemoteCredential:      credential,
 	})
 
 	// Create manager and add clusters
@@ -208,26 +236,21 @@ func (r *FluxReconciler) createObjectManager(obj *apiv1alpha1.Flux, pc *apiv1alp
 	mgr.AddCluster(mcpCluster)
 	mgr.AddCluster(platformCluster)
 
-	// create cleaners to remove orphaned pull secret copies
-	platformCleaner := flux.NewSecretCleaner(platformCluster, tenantNamespace, []corev1.LocalObjectReference{
-		{
-			Name: prefixedChartPullSecret,
-		},
-	})
-	controlPlaneSecretCleaner := flux.NewSecretCleaner(mcpCluster, fluxNamespace, helmValues.ImagePullSecrets)
-
-	configMapsToKeep := []corev1.LocalObjectReference{}
-	if pc.Spec.CABundleRef != nil {
-		configMapsToKeep = append(configMapsToKeep, corev1.LocalObjectReference{Name: flux.CustomCABundleConfigMapName})
-	}
-
-	controlPlaneConfigMapCleaner := flux.NewConfigMapCleaner(mcpCluster, fluxNamespace, configMapsToKeep)
-
-	mgr.AddCleaner(platformCleaner)
-	mgr.AddCleaner(controlPlaneSecretCleaner)
-	mgr.AddCleaner(controlPlaneConfigMapCleaner)
+	addCleaners(mgr, platformCluster, controllerCluster, helmValues, prefixedChartPullSecret, pc.Spec.CABundleRef != nil, controllersOnPlatform)
 
 	return mgr, nil
+}
+
+func (r *FluxReconciler) mcpCredentialHash(ctx context.Context, key client.ObjectKey) (string, error) {
+	secret := &corev1.Secret{}
+	if err := r.PlatformCluster.Client().Get(ctx, key, secret); err != nil {
+		return "", fmt.Errorf("failed to read MCP access credential: %w", err)
+	}
+	kubeconfig, ok := secret.Data["kubeconfig"]
+	if !ok || len(kubeconfig) == 0 {
+		return "", fmt.Errorf("MCP access credential %s does not contain kubeconfig", key)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(kubeconfig)), nil
 }
 
 func selectFluxVersion(requestedVersion string, pc *apiv1alpha1.ProviderConfig) (apiv1alpha1.FluxVersion, error) {
@@ -278,4 +301,73 @@ func allResourcesReady(resources []apiv1alpha1.ManagedResource) bool {
 		}
 	}
 	return true
+}
+
+func installationNamespace(defaultNamespace, override, tenantNamespace string, onPlatform bool) string {
+	if onPlatform {
+		return tenantNamespace
+	}
+	if override != "" {
+		return override
+	}
+	return defaultNamespace
+}
+
+func (r *FluxReconciler) configureRemoteVersion(ctx context.Context, active bool, version *apiv1alpha1.FluxVersion, namespace string, key client.ObjectKey) error {
+	hash := ""
+	var err error
+	if active {
+		hash, err = r.mcpCredentialHash(ctx, key)
+		if err != nil {
+			return err
+		}
+	}
+	version.Values, err = flux.ConfigureRemoteMCPControllers(version.Values, flux.RemoteCredentialName, namespace, hash)
+	return err
+}
+
+func (r *FluxReconciler) configureCA(controllerCluster flux.ManagedCluster, pc *apiv1alpha1.ProviderConfig, fluxVersion *apiv1alpha1.FluxVersion) error {
+	if pc.Spec.CABundleRef != nil {
+		// add custom ca volume, volumeMount and envVar to helm values
+		var err error
+		fluxVersion.Values, err = flux.AddCAToHelmValues(fluxVersion.Values, pc.Spec.CABundleRef)
+		if err != nil {
+			return fmt.Errorf("failed to add ca volume to helm values: %w", err)
+		}
+
+		// Sync ca configmap from platform cluster to MCP
+		flux.ManageCaConfigMap(controllerCluster, pc.Spec.CABundleRef.LocalObjectReference, flux.ConfigMapCopyConfig{
+			SourceClient:    r.PlatformCluster.Client(),
+			SourceNamespace: r.PodNamespace,
+			TargetNamespace: controllerCluster.GetDefaultNamespace(),
+			TargetName:      flux.CustomCABundleConfigMapName,
+		})
+
+	}
+
+	return nil
+}
+
+func addCleaners(mgr flux.Manager, platformCluster, controllerCluster flux.ManagedCluster, helmValues *flux.HelmValues, prefixedChartPullSecret string, hasCA, controllersOnPlatform bool) {
+	// create cleaners to remove orphaned pull secret copies
+	platformSecrets := append([]corev1.LocalObjectReference{}, helmValues.ImagePullSecrets...)
+	platformSecrets = append(platformSecrets, corev1.LocalObjectReference{Name: prefixedChartPullSecret}, corev1.LocalObjectReference{Name: flux.RemoteCredentialName})
+	platformCleaner := flux.NewSecretCleaner(platformCluster, platformCluster.GetDefaultNamespace(), platformSecrets)
+	secretsToKeep := append([]corev1.LocalObjectReference{}, helmValues.ImagePullSecrets...)
+	if controllersOnPlatform {
+		secretsToKeep = append(secretsToKeep, corev1.LocalObjectReference{Name: flux.RemoteCredentialName}, corev1.LocalObjectReference{Name: prefixedChartPullSecret})
+	}
+	controllerSecretCleaner := flux.NewSecretCleaner(controllerCluster, controllerCluster.GetDefaultNamespace(), secretsToKeep)
+
+	configMapsToKeep := []corev1.LocalObjectReference{}
+	if hasCA {
+		configMapsToKeep = append(configMapsToKeep, corev1.LocalObjectReference{Name: flux.CustomCABundleConfigMapName})
+	}
+
+	controllerConfigMapCleaner := flux.NewConfigMapCleaner(controllerCluster, controllerCluster.GetDefaultNamespace(), configMapsToKeep)
+
+	mgr.AddCleaner(platformCleaner)
+	mgr.AddCleaner(controllerSecretCleaner)
+	mgr.AddCleaner(controllerConfigMapCleaner)
+
 }
