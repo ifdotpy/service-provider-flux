@@ -24,6 +24,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openmcp-project/service-provider-flux/internal/onboarding"
+
 	helmv2 "github.com/fluxcd/helm-controller/api/v2"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	flag "github.com/spf13/pflag"
@@ -121,6 +123,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var servicePlacement string
+	var onboardingSecretLabel string
 	var tlsOpts []func(*tls.Config)
 
 	fips.Verify(context.Background())
@@ -146,6 +149,8 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&servicePlacement, "service-controller-cluster", string(controller.PlacementMCP),
 		"Cluster where the managed service controllers run: mcp or platform")
+
+	flag.StringVar(&onboardingSecretLabel, "onboarding-kubeconfig-label", "", "Watch labelled kubeconfig Secrets in the pod namespace instead of requesting one onboarding cluster")
 
 	logging.InitFlags(flag.CommandLine) // add standard logging flags
 
@@ -305,13 +310,17 @@ func main() {
 			},
 		},
 	}
-	onboardingCluster, err := requestOnboardingClusterAccess(ctx, clusterAccessManager, platformCluster, runPermissions, "run")
-	if err != nil {
-		setupLog.Error(err, "Failed to create and wait for onboarding cluster access")
+	var onboardingCluster *clusters.Cluster
+	if onboardingSecretLabel == "" {
+		onboardingCluster, err = requestOnboardingClusterAccess(ctx, clusterAccessManager, platformCluster, runPermissions, "run")
+		if err != nil {
+			setupLog.Error(err, "Failed to request onboarding cluster access")
+			os.Exit(1)
+		}
 	}
 	// end sp specifics
 
-	mgr, err := ctrl.NewManager(onboardingCluster.RESTConfig(), ctrl.Options{
+	mgr, multiMgr, err := onboarding.NewManagers(platformCluster, onboardingCluster, podNamespace, onboardingSecretLabel, ctrl.Options{
 		Scheme:                 onboardingScheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -329,7 +338,7 @@ func main() {
 		// if you are doing or is intended to do any operation such as perform cleanups
 		// after the manager stops then its usage might be unsafe.
 		// LeaderElectionReleaseOnCancel: true,
-	})
+	}, onboardingScheme)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -388,24 +397,30 @@ func main() {
 		car = localaccess.NewLocalAdvancedClusterAccessReconciler(car)
 	}
 
-	spr := serviceprovider.NewAPIReconcilerBuilder[*fluxsv1alpha1.Flux, *fluxsv1alpha1.ProviderConfig]().
+	reconcilerBuilder := serviceprovider.NewAPIReconcilerBuilder[*fluxsv1alpha1.Flux, *fluxsv1alpha1.ProviderConfig]().
 		EmptyObjectProvider(func() *fluxsv1alpha1.Flux { return &fluxsv1alpha1.Flux{} }).
 		EmptyConfigProvider(func() *fluxsv1alpha1.ProviderConfig { return &fluxsv1alpha1.ProviderConfig{} }).
 		PlatformCluster(platformCluster).
-		OnboardingCluster(onboardingCluster).
 		Reconciler(&controller.FluxReconciler{
 			OnboardingCluster: onboardingCluster,
 			PlatformCluster:   platformCluster,
 			PodNamespace:      podNamespace,
 			Placement:         controllerCluster,
 		}).
-		AdvancedClusterAccessReconciler(car).
-		MustBuild()
+		AdvancedClusterAccessReconciler(car)
 
-	if err := spr.SetupWithManager(mgr, providerName); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Flux")
+	if multiMgr != nil {
+		spr := reconcilerBuilder.MulticlusterAccessKey(onboarding.RegisteredNamespaceAccessKey).MustBuildMulticluster()
+		err = spr.SetupWithMulticlusterManager(multiMgr, providerName)
+	} else {
+		spr := reconcilerBuilder.OnboardingCluster(onboardingCluster).MustBuild()
+		err = spr.SetupWithManager(mgr, providerName)
+	}
+	if err != nil {
+		setupLog.Error(err, "unable to create service controller")
 		os.Exit(1)
 	}
+
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -418,7 +433,11 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	startManager := mgr.Start
+	if multiMgr != nil {
+		startManager = multiMgr.Start
+	}
+	if err := startManager(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}

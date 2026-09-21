@@ -127,6 +127,8 @@ github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 h1:5VipnvEpbqr2gA2VbM+nYVbkIF2
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0/go.mod h1:Hyl3n6Twe1hvtd9XUXDec4pTvgMSEixRuQKPTMH2bNs=
 github.com/hashicorp/go-cleanhttp v0.5.2 h1:035FKYIWjmULyFRBKPs8TBQoi0x6d9G4xc9neXJWAZQ=
 github.com/hashicorp/go-cleanhttp v0.5.2/go.mod h1:kO/YDlP8L1346E6Sodw+PrpBSV4/SoxCXGY6BqNFT48=
+github.com/ifdotpy/opencontrolplane-runtime v1.3.2-0.20260921054311-5b20c1342b25 h1:qlt0QQRAoyfECJangPC/RJYXSG5gIKBa0cn3mPErPHs=
+github.com/ifdotpy/opencontrolplane-runtime v1.3.2-0.20260921054311-5b20c1342b25/go.mod h1:QeASpP4SOjzCKKD/nc6cYjN/CqEpDuCLbWVd7Rs7UjQ=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
@@ -155,8 +157,6 @@ github.com/onsi/gomega v1.43.0 h1:VlG/1FxqNxhSO+lq/OHBNaaqwiBK/mO8JbVkX9Y+FeU=
 github.com/onsi/gomega v1.43.0/go.mod h1:REff/hsDsodHoKlWsP2mAPhu1+5/6hVYNf9rIEBpeSg=
 github.com/openmcp-project/controller-utils v0.33.0 h1:bL7NDif4mVueKjYkeoZtCxw7epWvgBwitQirXwKbwDY=
 github.com/openmcp-project/controller-utils v0.33.0/go.mod h1:E8wI18omlb2y+tghMvW0CEOv3babc5QQseoT0gM3cVs=
-github.com/openmcp-project/opencontrolplane-runtime v1.3.1 h1:utNsP827hCCskO3zsZFZYWQqPQZdKTvYL4g7nWv/TNo=
-github.com/openmcp-project/opencontrolplane-runtime v1.3.1/go.mod h1:Es0IrwlM6+luhWAnfeLhAT6fSwJl1mHZEsI2QHMjZeI=
 github.com/openmcp-project/openmcp-operator/api v1.4.0 h1:37CeeVBbtoLFoOn1BHclb9mbYD9+wIZ1d0MPJM9OFYE=
 github.com/openmcp-project/openmcp-operator/api v1.4.0/go.mod h1:0NRPZ31ueSEboe4rchsQJ5DEr6E6VmFCXVRjkX5rhr8=
 github.com/openmcp-project/openmcp-operator/lib v1.4.0 h1:P8zvR5173jEBqpshoYEfVWWwIp5SYxFy/Tqeau+FJ6E=
@@ -305,6 +305,8 @@ sigs.k8s.io/kustomize/api v0.21.1 h1:lzqbzvz2CSvsjIUZUBNFKtIMsEw7hVLJp0JeSIVmuJs
 sigs.k8s.io/kustomize/api v0.21.1/go.mod h1:f3wkKByTrgpgltLgySCntrYoq5d3q7aaxveSagwTlwI=
 sigs.k8s.io/kustomize/kyaml v0.21.1 h1:IVlbmhC076nf6foyL6Taw4BkrLuEsXUXNpsE+ScX7fI=
 sigs.k8s.io/kustomize/kyaml v0.21.1/go.mod h1:hmxADesM3yUN2vbA5z1/YTBnzLJ1dajdqpQonwBL1FQ=
+sigs.k8s.io/multicluster-runtime v0.24.1 h1:YlGqqk91ui0/VEXqemPd2+Z4UBmgvS2YwXaj2cItHQI=
+sigs.k8s.io/multicluster-runtime v0.24.1/go.mod h1:4+GrvEeaX0hg5MVZT02JNhF2nKZauyGhifjrkbc7yhc=
 sigs.k8s.io/randfill v1.0.0 h1:JfjMILfT8A6RbawdsK2JXGBR5AQVfd+9TbzrlneTyrU=
 sigs.k8s.io/randfill v1.0.0/go.mod h1:XeLlZ/jmk4i1HRopwe7/aU3H5n1zNUcX6TM94b3QxOY=
 sigs.k8s.io/structured-merge-diff/v6 v6.4.2 h1:qdOxHwrl2Kaag1aQEarlYcOA9vSyGCp3CIki3aW8c4Q=

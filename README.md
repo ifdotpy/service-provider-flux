@@ -286,3 +286,23 @@ Deletion uninstalls the Helm release before removing the credential copy. The
 MCP namespace used for leader election is retained because services can share it.
 Choose the placement before installing a service; moving an existing installation
 between clusters is not a supported migration operation.
+
+## Shared onboarding mode
+
+Set `--onboarding-kubeconfig-label=openmcp.cloud/onboarding-kubeconfig` to
+watch labelled kubeconfig Secrets in the provider pod namespace. This uses the
+kubeconfig provider from multicluster-runtime; it does not require a KCP-specific
+provider in this binary. Leave the flag empty for the existing single onboarding
+cluster mode.
+
+Each Secret must have the selected label set to `"true"`, a `kubeconfig` data
+entry, and a name equal to its globally unique onboarding namespace. Only service
+objects in that namespace are accepted. The installation supplies and rotates the
+credentials and removes the Secret after service cleanup. Use a separate
+registration namespace for each provider and restrict Secret writes to the
+registration owner.
+
+This mode shares the service-provider process across tenants. It does not combine
+managed service instances. Combine it with `--service-controller-cluster=platform`
+when tenant APIs have no worker nodes. The installation must provision the service
+API before registration; the single-cluster `init` command is not used in this mode.

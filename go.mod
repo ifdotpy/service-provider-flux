@@ -22,6 +22,7 @@ require (
 	k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3
 	sigs.k8s.io/controller-runtime v0.25.0
 	sigs.k8s.io/e2e-framework v0.7.0
+	sigs.k8s.io/multicluster-runtime v0.24.1
 )
 
 require (
@@ -132,3 +133,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/openmcp-project/opencontrolplane-runtime => github.com/ifdotpy/opencontrolplane-runtime v1.3.2-0.20260921054311-5b20c1342b25
